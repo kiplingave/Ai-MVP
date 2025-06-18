@@ -9,3 +9,4 @@ matplotlib
 plotly
 scikit-learn
 stable-baselines3
+pycoingecko==3.2.0
