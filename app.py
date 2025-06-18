@@ -1,4 +1,3 @@
-
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -6,12 +5,17 @@ from datetime import datetime, timedelta
 from openai import OpenAI
 from pycoingecko import CoinGeckoAPI
 import yfinance as yf
+import plotly.express as px  # Added for visualization
 
-# ✅ Set page config first
-st.set_page_config(page_title="Portfolio AI Assistant", layout="wide")
+# Set page config
+st.set_page_config(page_title="Yeildera Portfolio AI Assistant", layout="wide")
 
-# ✅ OpenAI client setup
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# OpenAI client setup
+try:
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+except KeyError:
+    st.error("OpenAI API key not found in Streamlit secrets. Please configure it.")
+    st.stop()
 
 # --- Sidebar: Toggle IDX vs Crypto ---
 st.sidebar.markdown("### Options")
@@ -29,25 +33,34 @@ st.sidebar.write("Assets:", ", ".join(asset_list))
 def get_live_crypto_data(coin_ids, days=7):
     cg = CoinGeckoAPI()
     prices = {}
-    for coin in coin_ids:
-        try:
+    try:
+        for coin in coin_ids:
             data = cg.get_coin_market_chart_by_id(id=coin, vs_currency='usd', days=days)
             prices[coin] = [price[1] for price in data['prices']]
-        except Exception as e:
-            st.error(f"Failed to fetch {coin}: {e}")
-            prices[coin] = [np.nan] * days
+    except Exception as e:
+        st.error(f"Failed to fetch crypto data: {e}")
+        return None
     df = pd.DataFrame(prices)
-    df.index = pd.date_range(end=datetime.now(), periods=len(df))
+    df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
     return df
 
 def get_live_idx_data(tickers, start="2023-01-01", end=None):
     if end is None:
         end = datetime.today().strftime('%Y-%m-%d')
-    df = yf.download(tickers, start=start, end=end)["Adj Close"]
-    return df.dropna()
+    try:
+        df = yf.download(tickers, start=start, end=end)["Adj Close"]
+        if df.empty:
+            st.error("No data returned for IDX tickers.")
+            return None
+        return df.dropna()
+    except Exception as e:
+        st.error(f"Failed to fetch IDX data: {e}")
+        return None
 
-# --- Optimizer logic ---
+# --- Optimizer Logic ---
 def calculate_metrics(returns, inflation_rate=0):
+    if returns.empty:
+        raise ValueError("Returns data is empty.")
     mean_returns = returns.mean() * 252 - inflation_rate / 100
     cov_matrix = returns.cov() * 252
     return mean_returns, cov_matrix
@@ -77,15 +90,28 @@ def get_model_output(coin_ids, days=7):
         df = get_live_idx_data(coin_ids)
     else:
         df = get_live_crypto_data(coin_ids, days)
+    
+    if df is None or df.empty:
+        st.error("Failed to retrieve valid market data.")
+        return None
+    
     returns = df.pct_change().dropna()
-    mean_returns, cov_matrix = calculate_metrics(returns)
-    results, weights = generate_portfolios(100, mean_returns, cov_matrix)
-    best_idx = np.argmax(results[2])
-    return dict(zip(coin_ids, weights[best_idx]))
+    if returns.empty:
+        st.error("No valid returns calculated. Check data quality.")
+        return None
+    
+    try:
+        mean_returns, cov_matrix = calculate_metrics(returns)
+        results, weights = generate_portfolios(100, mean_returns, cov_matrix)
+        best_idx = np.argmax(results[2])
+        return dict(zip(coin_ids, weights[best_idx]))
+    except Exception as e:
+        st.error(f"Optimization failed: {e}")
+        return None
 
-# --- GPT Chat UI ---
-st.title("💹 Portfolio AI Assistant 🤖")
-st.write("Ask anything about your crypto or IDX portfolio.")
+# --- Streamlit UI ---
+st.title("💹 Yeildera Portfolio AI Assistant 🤖")
+st.write("Ask about your crypto or IDX portfolio. Powered by live market data and AI optimization.")
 
 user_input = st.text_input("Your question about portfolio:", "")
 
@@ -93,25 +119,44 @@ if user_input:
     if "allocate" in user_input.lower() or "suggest" in user_input.lower() or "invest" in user_input.lower():
         with st.spinner("Optimizing portfolio using live data..."):
             alloc = get_model_output(asset_list)
-            alloc_str = ", ".join([f"{k}: {round(v*100,2)}%" for k,v in alloc.items()])
-            gpt_input = f"The optimized portfolio allocation is: {alloc_str}"
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You're a helpful portfolio assistant."},
-                    {"role": "user", "content": gpt_input}
-                ]
-            )
-            st.success(response.choices[0].message.content)
-            st.info("📊 Allocation:
-" + gpt_input)
+            if alloc:
+                alloc_str = ", ".join([f"{k}: {round(v*100, 2)}%" for k, v in alloc.items()])
+                gpt_input = f"The optimized portfolio allocation is: {alloc_str}. Explain this allocation in simple terms for a retail investor."
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-3.5-turbo",  # Updated to a newer model
+                        messages=[
+                            {"role": "system", "content": "You're a helpful portfolio assistant for retail investors."},
+                            {"role": "user", "content": gpt_input}
+                        ]
+                    )
+                    st.success(response.choices[0].message.content)
+                    
+                    # Display allocation and add visualization
+                    st.info(f"📊 Allocation: {alloc_str}")
+                    
+                    # Pie chart for allocation
+                    alloc_df = pd.DataFrame(list(alloc.items()), columns=["Asset", "Weight"])
+                    fig = px.pie(alloc_df, values="Weight", names="Asset", title="Portfolio Allocation")
+                    st.plotly_chart(fig)
+                except Exception as e:
+                    st.error(f"Failed to get GPT response: {e}")
+            else:
+                st.error("Unable to generate portfolio allocation.")
     else:
         with st.spinner("Thinking..."):
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You're a helpful portfolio assistant."},
-                    {"role": "user", "content": user_input}
-                ]
-            )
-            st.success(response.choices[0].message.content)
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo"",
+                    messages=[
+                        {"role": "system", "content": "You're a helpful portfolio assistant for retail investors."},
+                        {"role": "user", "content": user_input}
+                    ]
+                )
+                st.success(response.choices[0].message.content)
+            except Exception as e:
+                st.error(f"Failed to get GPT response: {e}")
+
+# Disclaimer
+st.markdown("---")
+st.caption("⚠️ This is not financial advice. Always consult a professional before investing.")
