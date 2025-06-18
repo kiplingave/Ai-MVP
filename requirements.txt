@@ -10,3 +10,5 @@ plotly
 scikit-learn
 stable-baselines3
 pycoingecko==3.2.0
+ccxt==4.3.115
+requests==2.32.3
