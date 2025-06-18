@@ -3,9 +3,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from openai import OpenAI
-from pycoingecko import CoinGeckoAPI
+import requests
+import ccxt
 import yfinance as yf
-import plotly.express as px  # Added for visualization
+import plotly.express as px
 
 # Set page config
 st.set_page_config(page_title="Yeildera Portfolio AI Assistant", layout="wide")
@@ -15,6 +16,13 @@ try:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 except KeyError:
     st.error("OpenAI API key not found in Streamlit secrets. Please configure it.")
+    st.stop()
+
+# CoinMarketCap API key (store in secrets)
+try:
+    CMC_API_KEY = st.secrets["CMC_API_KEY"]
+except KeyError:
+    st.error("CoinMarketCap API key not found in Streamlit secrets. Sign up at https://coinmarketcap.com/api/.")
     st.stop()
 
 # --- Sidebar: Toggle IDX vs Crypto ---
@@ -31,18 +39,52 @@ st.sidebar.write("Assets:", ", ".join(asset_list))
 # --- LIVE DATA FUNCTIONS ---
 
 def get_live_crypto_data(coin_ids, days=7):
-    cg = CoinGeckoAPI()
-    prices = {}
+    # Map coin IDs to CoinMarketCap symbols
+    cmc_symbols = {
+        "bitcoin": "BTC",
+        "ethereum": "ETH",
+        "solana": "SOL",
+        "cardano": "ADA",
+        "polkadot": "DOT",
+        "chainlink": "LINK",
+        "litecoin": "LTC"
+    }
+    symbols = ",".join(cmc_symbols[coin.lower()] for coin in coin_ids)
+    
     try:
-        for coin in coin_ids:
-            data = cg.get_coin_market_chart_by_id(id=coin, vs_currency='usd', days=days)
-            prices[coin] = [price[1] for price in data['prices']]
+        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+        headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+        params = {"symbol": symbols, "convert": "USD"}
+        response = requests.get(url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            prices = {}
+            for coin in coin_ids:
+                symbol = cmc_symbols[coin.lower()]
+                price = data["data"][symbol]["quote"]["USD"]["price"]
+                # Simulate historical data (free tier lacks historical endpoint)
+                prices[coin] = [price] * days  # Placeholder: Use ccxt for historical data
+            df = pd.DataFrame(prices)
+            df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
+            return df
+        else:
+            raise Exception(f"CoinMarketCap error: {response.json().get('status', {}).get('error_message', 'Unknown error')}")
     except Exception as e:
-        st.error(f"Failed to fetch crypto data: {e}")
-        return None
-    df = pd.DataFrame(prices)
-    df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
-    return df
+        st.warning(f"CoinMarketCap failed: {e}. Falling back to ccxt.")
+        try:
+            exchange = ccxt.binance()
+            prices = {}
+            for coin in coin_ids:
+                symbol = f"{cmc_symbols[coin.lower()]}/USDT"
+                data = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=days)
+                prices[coin] = [row[4] for row in data]  # Close price
+            df = pd.DataFrame(prices)
+            df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
+            return df
+        except Exception as e:
+            st.error(f"ccxt fallback failed: {e}")
+            return None
 
 def get_live_idx_data(tickers, start="2023-01-01", end=None):
     if end is None:
@@ -69,20 +111,16 @@ def generate_portfolios(n, mean_returns, cov_matrix):
     num_assets = len(mean_returns)
     results = np.zeros((3, n))
     weights_record = []
-
     for i in range(n):
         weights = np.random.random(num_assets)
         weights /= np.sum(weights)
         weights_record.append(weights)
-
         ret = np.sum(weights * mean_returns)
         vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
         sharpe = ret / vol if vol != 0 else 0
-
         results[0, i] = ret
         results[1, i] = vol
         results[2, i] = sharpe
-
     return results, weights_record
 
 def get_model_output(coin_ids, days=7):
@@ -90,16 +128,13 @@ def get_model_output(coin_ids, days=7):
         df = get_live_idx_data(coin_ids)
     else:
         df = get_live_crypto_data(coin_ids, days)
-    
     if df is None or df.empty:
         st.error("Failed to retrieve valid market data.")
         return None
-    
     returns = df.pct_change().dropna()
     if returns.empty:
         st.error("No valid returns calculated. Check data quality.")
         return None
-    
     try:
         mean_returns, cov_matrix = calculate_metrics(returns)
         results, weights = generate_portfolios(100, mean_returns, cov_matrix)
@@ -108,6 +143,16 @@ def get_model_output(coin_ids, days=7):
     except Exception as e:
         st.error(f"Optimization failed: {e}")
         return None
+
+# --- PPO Placeholder ---
+# from stable_baselines3 import PPO
+# from finrl.env_stock_trading import StockTradingEnv
+# def get_ppo_output(df, coin_ids):
+#     env = StockTradingEnv(df=df, initial_amount=10000)
+#     model = PPO.load("ppo_yeildera")
+#     obs = env.reset()
+#     action, _ = model.predict(obs)
+#     return dict(zip(coin_ids, action / np.sum(action)))
 
 # --- Streamlit UI ---
 st.title("💹 Yeildera Portfolio AI Assistant 🤖")
@@ -124,18 +169,14 @@ if user_input:
                 gpt_input = f"The optimized portfolio allocation is: {alloc_str}. Explain this allocation in simple terms for a retail investor."
                 try:
                     response = client.chat.completions.create(
-                        model="gpt-3.5-turbo",  # Updated to a newer model
+                        model="gpt-3.5-turbo",
                         messages=[
                             {"role": "system", "content": "You're a helpful portfolio assistant for retail investors."},
                             {"role": "user", "content": gpt_input}
                         ]
                     )
                     st.success(response.choices[0].message.content)
-                    
-                    # Display allocation and add visualization
                     st.info(f"📊 Allocation: {alloc_str}")
-                    
-                    # Pie chart for allocation
                     alloc_df = pd.DataFrame(list(alloc.items()), columns=["Asset", "Weight"])
                     fig = px.pie(alloc_df, values="Weight", names="Asset", title="Portfolio Allocation")
                     st.plotly_chart(fig)
