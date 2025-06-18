@@ -25,7 +25,7 @@ user_input = st.text_input("Your question about portfolio:", "")
 if user_input:
     with st.spinner("Thinking..."):
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a portfolio assistant using FinRL-style logic."},
                 {"role": "user", "content": user_input}
