@@ -18,7 +18,7 @@ except KeyError:
     st.error("OpenAI API key not found in Streamlit secrets. Please configure it.")
     st.stop()
 
-# CoinMarketCap API key (store in secrets)
+# CoinMarketCap API key
 try:
     CMC_API_KEY = st.secrets["CMC_API_KEY"]
 except KeyError:
@@ -39,7 +39,6 @@ st.sidebar.write("Assets:", ", ".join(asset_list))
 # --- LIVE DATA FUNCTIONS ---
 
 def get_live_crypto_data(coin_ids, days=7):
-    # Map coin IDs to CoinMarketCap symbols
     cmc_symbols = {
         "bitcoin": "BTC",
         "ethereum": "ETH",
@@ -63,8 +62,7 @@ def get_live_crypto_data(coin_ids, days=7):
             for coin in coin_ids:
                 symbol = cmc_symbols[coin.lower()]
                 price = data["data"][symbol]["quote"]["USD"]["price"]
-                # Simulate historical data (free tier lacks historical endpoint)
-                prices[coin] = [price] * days  # Placeholder: Use ccxt for historical data
+                prices[coin] = [price] * days  # Placeholder for historical data
             df = pd.DataFrame(prices)
             df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
             return df
@@ -78,7 +76,7 @@ def get_live_crypto_data(coin_ids, days=7):
             for coin in coin_ids:
                 symbol = f"{cmc_symbols[coin.lower()]}/USDT"
                 data = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=days)
-                prices[coin] = [row[4] for row in data]  # Close price
+                prices[coin] = [row[4] for row in data]
             df = pd.DataFrame(prices)
             df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
             return df
