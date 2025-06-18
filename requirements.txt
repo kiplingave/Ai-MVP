@@ -1,0 +1,11 @@
+
+streamlit
+openai
+finrl
+yfinance
+pandas
+numpy
+matplotlib
+plotly
+scikit-learn
+stable-baselines3
